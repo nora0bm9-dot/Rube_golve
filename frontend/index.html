@@ -123,17 +123,15 @@
                         <label for="gesture-select">Preset Gesture:</label>
                         <select id="gesture-select" class="styled-select">
                             <option value="HELLO">HELLO</option>
-                            <option value="THANK_YOU">THANK_YOU</option>
-                            <option value="YES">YES</option>
-                            <option value="NO">NO</option>
-                            <option value="PLEASE">PLEASE</option>
                             <option value="CUSTOM">Custom Label...</option>
                         </select>
                         <input type="text" id="custom-label-input" class="styled-input" placeholder="Enter gesture (e.g. OK)" style="display: none;">
+                        <label for="sample-count-input">Samples per gesture:</label>
+                        <input type="number" id="sample-count-input" class="styled-input" min="1" max="500" value="20">
                     </div>
 
                     <div class="collection-actions">
-                        <button id="record-btn" class="btn btn-record">⏺ Record Gesture Sample (2s)</button>
+                        <button id="record-btn" class="btn btn-record">⏺ Start 20-sample batch</button>
                         <button id="export-csv-btn" class="btn btn-secondary" title="Export in-browser collected samples">📥 Export CSV</button>
                     </div>
 
@@ -151,7 +149,7 @@
                             <strong id="active-target-label">HELLO</strong>
                         </div>
                     </div>
-                    <p id="collection-feedback" class="collection-hint">Hold gesture steady for 2 seconds while recording.</p>
+                    <p id="collection-feedback" class="collection-hint">Connect ESP32, choose a label, and record 20 samples. Press Enter to start each next sample. New samples are learned on this browser only.</p>
                 </div>
             </div>
 
@@ -176,8 +174,6 @@
         </footer>
     </main>
 
-    <script src="js/classifier.js"></script>
 <script src="js/script.js"></script>
 </body>
 </html>
-

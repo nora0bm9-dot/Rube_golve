@@ -1,4 +1,4 @@
-// --- Continuous In-Browser Recognition ---
+﻿// --- Continuous In-Browser Recognition ---
 let liveRecognitionBuffer = [];
 let lastBrowserPredictTime = 0;
 
@@ -24,25 +24,24 @@ function handleLiveBrowserPrediction(values) {
         const sampleReadings = liveRecognitionBuffer.slice(-80);
         const features360 = resampleTo10Points(sampleReadings);
         
-        if (features360 && typeof predictWithBrowserModel === "function") {
-            const res = predictWithBrowserModel(features360);
-            const pred = res.prediction || "�";
+        if (features360) {
+            const res = predictFromTrainingSamples(features360);
+            const pred = res.prediction || "—";
             
             prediction.textContent = pred.replace(/_/g, " ");
-            confidence.textContent = ${res.confidence}%;
-            confidence-bar.style.width = ${Math.min(100, res.confidence)}%;
+            confidence.textContent = `${res.confidence}%`;
+            $("confidence-bar").style.width = `${Math.min(100, res.confidence)}%`;
             
-            if (pred !== "�") {
-                translation.textContent = ${translations[pred] || pred} � In-Browser AI (%);
+            if (pred !== "—") {
+                translation.textContent = `${translations[pred] || pred} · In-Browser AI (${res.confidence}%)`;
                 if (pred !== lastPrediction) {
                     addHistory(pred, res.confidence);
-                    if (pred === "HELLO" || res.confidence >= 70) {
-                        speakWord(pred);
-                    }
                     lastPrediction = pred;
                 }
+                maybeSpeakPrediction(pred, res.confidence);
             } else {
                 translation.textContent = "Perform a gesture with the sensor glove...";
+                lastPrediction = "";
             }
         }
     }
@@ -64,14 +63,21 @@ const translations = {
     OK: "Okay"
 };
 
-// ─── Application State ──────────────────────────────────────────────────
+// â”€â”€â”€ Application State â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 let connectionMode = "webserial"; // "webserial" or "backend"
 let serialPort = null;
 let serialReader = null;
 let isSerialReading = false;
 let recognitionEnabled = false;
 let lastPrediction = "";
+let lastAutoSpokenAt = 0;
 let historyItems = [];
+let referenceSamples = [];
+let batchLabel = "";
+let batchRemaining = 0;
+let batchTotal = 0;
+let isCollecting = false;
+let batchInProgress = false;
 
 // Local backend endpoint
 const BACKEND_URL = "http://127.0.0.1:5000";
@@ -83,14 +89,16 @@ let latestSensors = [];
 let validReadingsCount = 0;
 
 // Data Collection State
-let isCollecting = false;
-let collectedSamplesInMemory = []; // for browser CSV export
+let collectedSamplesInMemory = [];
+const COLLECTION_STORAGE_KEY = "ruby-glove-collected-samples-v2";
+const LEGACY_COLLECTION_STORAGE_KEY = "ruby-glove-collected-samples";
 let collectionWindowReadings = [];
 let collectionStartTime = 0;
 const CAPTURE_DURATION_MS = 2000;
 const TIME_POINTS = 10;
+const AUTO_SPEECH_INTERVAL_MS = 3000;
 
-// ─── Waveform Animation ────────────────────────────────────────────────
+// â”€â”€â”€ Waveform Animation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function animateWaveform(sensors) {
     const waveform = $("waveform");
     if (!waveform) return;
@@ -107,7 +115,7 @@ function animateWaveform(sensors) {
     });
 }
 
-// ─── Render 6 MPU6050 Sensor Cards ──────────────────────────────────────
+// â”€â”€â”€ Render 6 MPU6050 Sensor Cards â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function renderSensors(sensors) {
     if (!sensors || sensors.length !== 6) return;
     const grid = $("sensor-grid");
@@ -117,7 +125,7 @@ function renderSensors(sensors) {
         <div class="sensor-card">
             <div class="sensor-title">
                 <span>MPU6050 #${s.id}</span>
-                <span>● LIVE</span>
+                <span>â— LIVE</span>
             </div>
             <div class="sensor-values">
                 <div class="sensor-value">Ax<b>${Number(s.ax).toFixed(2)}</b></div>
@@ -133,7 +141,7 @@ function renderSensors(sensors) {
     animateWaveform(sensors);
 }
 
-// ─── Parse 36 CSV Values ──────────────────────────────────────────────
+// â”€â”€â”€ Parse 36 CSV Values â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function parse36Values(line) {
     if (!line) return null;
     const parts = line.trim().split(/[, ]+/);
@@ -165,7 +173,7 @@ function valuesToSensorCards(values) {
     return cards;
 }
 
-// ─── Speech Synthesis ─────────────────────────────────────────────────
+// â”€â”€â”€ Speech Synthesis â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function speakWord(word) {
     if (!("speechSynthesis" in window)) {
         $("translation").textContent = "Speech is not supported in this browser.";
@@ -180,7 +188,50 @@ function speakWord(word) {
     window.speechSynthesis.speak(utterance);
 }
 
-// ─── History ──────────────────────────────────────────────────────────
+function predictFromTrainingSamples(features) {
+    const samples = [...referenceSamples, ...collectedSamplesInMemory];
+    if (!samples.length || features.length !== 360) {
+        return { prediction: "—", confidence: 0 };
+    }
+
+    const nearest = samples
+        .map(sample => {
+            let squaredDistance = 0;
+            for (let index = 0; index < features.length; index++) {
+                const delta = features[index] - sample.features[index];
+                squaredDistance += delta * delta;
+            }
+            return { label: sample.label, distance: Math.sqrt(squaredDistance / features.length) };
+        })
+        .sort((left, right) => left.distance - right.distance)
+        .slice(0, Math.min(5, samples.length));
+
+    const weights = new Map();
+    let totalWeight = 0;
+    for (const neighbor of nearest) {
+        const weight = 1 / Math.max(neighbor.distance, 0.0001);
+        weights.set(neighbor.label, (weights.get(neighbor.label) || 0) + weight);
+        totalWeight += weight;
+    }
+
+    const [prediction, winningWeight] = [...weights.entries()]
+        .sort((left, right) => right[1] - left[1])[0];
+    const confidence = Math.round((winningWeight / totalWeight) * 100);
+    return {
+        prediction: confidence >= 40 ? prediction : "—",
+        confidence
+    };
+}
+
+function maybeSpeakPrediction(word, confidence) {
+    if (Number(confidence) < 70) return;
+    const now = Date.now();
+    if (now - lastAutoSpokenAt < AUTO_SPEECH_INTERVAL_MS) return;
+    speakWord(word);
+    lastAutoSpokenAt = now;
+}
+
+// â”€â”€â”€ History â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function addHistory(word, confidence) {
     if (historyItems.length && historyItems[0].word === word) return;
 
@@ -199,7 +250,7 @@ function addHistory(word, confidence) {
     `).join("");
 }
 
-// ─── Web Serial API Implementation ────────────────────────────────────
+// â”€â”€â”€ Web Serial API Implementation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function connectWebSerial() {
     if (!("serial" in navigator)) {
         alert("Web Serial API is not supported in this browser. Please use Google Chrome, Microsoft Edge, or Opera.");
@@ -212,9 +263,9 @@ async function connectWebSerial() {
 
         $("app-status").innerHTML = `<span class="pulse"></span> SERIAL CONNECTED`;
         $("app-status").classList.add("connected");
-        $("connect-btn").textContent = "🔌 Disconnect ESP32";
-        $("serial-chip").textContent = "115200 BAUD · CONNECTED";
-        $("signal-legend").textContent = "● SENSOR STREAM ACTIVE";
+        $("connect-btn").textContent = "ðŸ”Œ Disconnect ESP32";
+        $("serial-chip").textContent = "115200 BAUD Â· CONNECTED";
+        $("signal-legend").textContent = "â— SENSOR STREAM ACTIVE";
         $("translation").textContent = "ESP32 connected via Web Serial. Ready!";
 
         readSerialLoop();
@@ -241,9 +292,9 @@ async function disconnectWebSerial() {
 
     $("app-status").innerHTML = `<span class="pulse"></span> DISCONNECTED`;
     $("app-status").classList.remove("connected");
-    $("connect-btn").textContent = "🔌 Connect ESP32";
-    $("serial-chip").textContent = "115200 BAUD · 36 VALUES";
-    $("signal-legend").textContent = "● AWAITING SERIAL STREAM";
+    $("connect-btn").textContent = "ðŸ”Œ Connect ESP32";
+    $("serial-chip").textContent = "115200 BAUD Â· 36 VALUES";
+    $("signal-legend").textContent = "â— AWAITING SERIAL STREAM";
     $("translation").textContent = "ESP32 disconnected.";
 }
 
@@ -294,7 +345,7 @@ handleLiveBrowserPrediction(values);
     }
 }
 
-// ─── Resample Sequence to 10 Time Points (360 features) ────────────────
+// â”€â”€â”€ Resample Sequence to 10 Time Points (360 features) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function resampleTo10Points(readings) {
     if (readings.length < TIME_POINTS) return null;
 
@@ -306,29 +357,35 @@ function resampleTo10Points(readings) {
     return flattened; // Exactly 360 values
 }
 
-// ─── Data Collection Handler ──────────────────────────────────────────
+// â”€â”€â”€ Data Collection Handler â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function triggerCollection() {
-    const targetLabel = getActiveLabel();
-    if (!targetLabel) {
-        alert("Please select or enter a valid gesture label.");
-        return;
+    if (isCollecting) return;
+    if (!batchInProgress) {
+        batchLabel = getActiveLabel();
+        const requestedSamples = Number.parseInt($("sample-count-input").value, 10);
+        if (!batchLabel || !Number.isInteger(requestedSamples) || requestedSamples < 1 || requestedSamples > 500) {
+            $("collection-feedback").textContent = "Enter a label and a batch size between 1 and 500.";
+            return;
+        }
+        batchRemaining = requestedSamples;
+        batchTotal = requestedSamples;
+        batchInProgress = true;
     }
 
     if (connectionMode === "backend") {
-        // Send request to Python backend
-        $("collection-feedback").textContent = `Recording ${targetLabel} via Python backend...`;
+        $("collection-feedback").textContent = `Recording ${batchLabel} sample ${batchTotal - batchRemaining + 1}/${batchTotal}...`;
         $("record-btn").disabled = true;
         try {
             const resp = await fetch(`${BACKEND_URL}/api/collect`, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ label: targetLabel })
+                body: JSON.stringify({ label: batchLabel })
             });
             const data = await resp.json();
             if (data.success) {
                 $("total-samples-count").textContent = data.total_samples;
                 $("window-readings-count").textContent = `${data.readings} readings`;
-                $("collection-feedback").textContent = `✓ Sample saved to ${data.file}! (${data.total_samples} total)`;
+                completeBatchSample(`Sample saved to ${data.file} (${data.total_samples} total).`);
             } else {
                 $("collection-feedback").textContent = `Error: ${data.error}`;
             }
@@ -346,43 +403,120 @@ async function triggerCollection() {
         return;
     }
 
-    if (isCollecting) return;
-
     isCollecting = true;
     collectionWindowReadings = [];
     collectionStartTime = performance.now();
     $("record-btn").disabled = true;
-    $("record-btn").textContent = "⏳ Recording (2s)... Hold steady";
-    $("collection-feedback").textContent = `Capturing motion pattern for "${targetLabel}"...`;
+    $("record-btn").textContent = "â³ Recording (2s)... Hold steady";
+    $("collection-feedback").textContent =
+        `Capturing "${batchLabel}" sample ${batchTotal - batchRemaining + 1}/${batchTotal}. Hold the gesture steady...`;
 
     setTimeout(() => {
         isCollecting = false;
         $("record-btn").disabled = false;
-        $("record-btn").textContent = "⏺ Record Gesture Sample (2s)";
+        $("record-btn").textContent = "âº Record Gesture Sample (2s)";
 
         const count = collectionWindowReadings.length;
         if (count < TIME_POINTS) {
-            $("collection-feedback").textContent = `⚠ Only received ${count} valid readings. Need at least 10. Try again.`;
+            $("record-btn").textContent = "⏺ Retry this sample";
+            $("collection-feedback").textContent =
+                `Only received ${count} valid readings. Press Enter or click to retry this sample.`;
             return;
         }
 
         const features360 = resampleTo10Points(collectionWindowReadings);
         if (!features360) {
+            $("record-btn").textContent = "⏺ Retry this sample";
             $("collection-feedback").textContent = "Failed to resample readings.";
             return;
         }
 
-        collectedSamplesInMemory.push({
-            label: targetLabel,
+        const sample = {
+            label: batchLabel,
             features: features360
-        });
+        };
+        collectedSamplesInMemory.push(sample);
 
-        $("total-samples-count").textContent = collectedSamplesInMemory.length;
-        $("collection-feedback").textContent = `✓ Recorded sample #${collectedSamplesInMemory.length} for ${targetLabel}! (${count} readings resampled to 360 features)`;
+        updateGestureOptions();
+        const saved = persistCollectedSamples();
+        completeBatchSample(
+            saved
+                ? `Saved sample in this browser (${count} readings).`
+                : `Sample is only available until this tab closes (${count} readings); export the CSV now.`
+        );
     }, CAPTURE_DURATION_MS);
 }
 
-// ─── Export CSV from In-Browser Collection ──────────────────────────────
+function persistCollectedSamples() {
+    try {
+        localStorage.setItem(COLLECTION_STORAGE_KEY, JSON.stringify(collectedSamplesInMemory));
+        return true;
+    } catch (error) {
+        console.error("Could not persist collected samples in browser storage:", error);
+        return false;
+    }
+}
+
+function completeBatchSample(message) {
+    batchRemaining -= 1;
+    $("record-btn").disabled = false;
+    if (batchRemaining === 0) {
+        batchInProgress = false;
+        $("record-btn").textContent = "⏺ Start another batch";
+        $("collection-feedback").textContent =
+            `${message} Finished all ${batchTotal} ${batchLabel} samples.`;
+        return;
+    }
+
+    $("record-btn").textContent = `⏺ Record next sample (${batchRemaining} left)`;
+    $("collection-feedback").textContent =
+        `${message} Press Enter or click the button to record ${batchLabel} sample ${batchTotal - batchRemaining + 1}/${batchTotal}.`;
+}
+
+function updateGestureOptions() {
+    const select = $("gesture-select");
+    const customOption = select.querySelector('option[value="CUSTOM"]');
+    const labels = new Set([
+        ...referenceSamples.map(sample => sample.label),
+        ...collectedSamplesInMemory.map(sample => sample.label)
+    ]);
+
+    for (const label of labels) {
+        if (select.querySelector(`option[value="${label}"]`)) continue;
+        const option = document.createElement("option");
+        option.value = label;
+        option.textContent = label.replace(/_/g, " ");
+        select.insertBefore(option, customOption);
+    }
+
+    $("total-samples-count").textContent = referenceSamples.length + collectedSamplesInMemory.length;
+}
+
+async function loadHelloTrainingSamples() {
+    try {
+        let response = await fetch("data/HELLO.csv");
+        if (!response.ok) {
+            response = await fetch("../data/HELLO.csv");
+        }
+        if (!response.ok) throw new Error(`HELLO dataset request failed (${response.status}).`);
+        const csv = await response.text();
+        referenceSamples = csv.split(/\r?\n/).flatMap(line => {
+            const row = line.trim().split(",");
+            if (row.length !== 361 || row[360].trim().toUpperCase() !== "HELLO") return [];
+            const features = row.slice(0, 360).map(Number);
+            return features.every(Number.isFinite) ? [{ label: "HELLO", features }] : [];
+        });
+        updateGestureOptions();
+        $("collection-feedback").textContent =
+            `Loaded ${referenceSamples.length} retained HELLO samples. New samples are stored and learned in this browser only.`;
+    } catch (error) {
+        console.error("Could not load retained HELLO samples:", error);
+        $("collection-feedback").textContent =
+            "HELLO reference data could not be loaded. Open the published GitHub Pages link or a local web server.";
+    }
+}
+
+// â”€â”€â”€ Export CSV from In-Browser Collection â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function exportCSV() {
     if (!collectedSamplesInMemory.length) {
         alert("No samples recorded in this browser session yet. Record samples first!");
@@ -406,17 +540,19 @@ function exportCSV() {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+    URL.revokeObjectURL(url);
 }
 
 function getActiveLabel() {
     const select = $("gesture-select");
     if (select.value === "CUSTOM") {
-        return $("custom-label-input").value.trim().toUpperCase() || "CUSTOM";
+        const label = $("custom-label-input").value.trim().toUpperCase();
+        return /^[A-Z0-9][A-Z0-9_-]*$/.test(label) ? label : "";
     }
     return select.value;
 }
 
-// ─── Local Backend Integration ────────────────────────────────────────
+// â”€â”€â”€ Local Backend Integration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function updateBackendStatus() {
     if (connectionMode !== "backend") return;
     try {
@@ -428,10 +564,10 @@ async function updateBackendStatus() {
             status.serial_connected ? `${status.port} CONNECTED` : `${status.port} DISCONNECTED`,
             status.model_loaded ? "MODEL LOADED" : "NO MODEL"
         ];
-        $("app-status").innerHTML = `<span class="pulse"></span> ${parts.join(" · ")}`;
-        $("serial-chip").textContent = `${status.port} · 6 MPU6050`;
+        $("app-status").innerHTML = `<span class="pulse"></span> ${parts.join(" Â· ")}`;
+        $("serial-chip").textContent = `${status.port} Â· 6 MPU6050`;
         recognitionEnabled = status.recognition_enabled;
-        $("start-btn").textContent = recognitionEnabled ? "⏸ Pause recognition" : "▶ Start recognition";
+        $("start-btn").textContent = recognitionEnabled ? "â¸ Pause recognition" : "â–¶ Start recognition";
 
         if (!status.serial_connected) {
             $("translation").textContent = `ESP32 not open on ${status.port}. Click Connect to open.`;
@@ -452,18 +588,20 @@ async function updateBackendPrediction() {
             renderSensors(data.sensors);
         }
 
-        const pred = data.prediction || "—";
+        const pred = data.prediction || "â€”";
         $("prediction").textContent = pred.replace(/_/g, " ");
         $("confidence").textContent = `${data.confidence || 0}%`;
         $("confidence-bar").style.width = `${Math.min(100, data.confidence || 0)}%`;
 
-        if (pred !== "—") {
+        if (pred !== "â€”") {
             $("translation").textContent = `${translations[pred] || pred} (Confidence: ${data.confidence}%)`;
             if (pred !== lastPrediction) {
                 addHistory(pred, data.confidence || 0);
-                if (pred === "HELLO") speakWord(pred);
                 lastPrediction = pred;
             }
+            maybeSpeakPrediction(pred, data.confidence);
+        } else {
+            lastPrediction = "";
         }
     } catch (e) {}
 }
@@ -478,21 +616,21 @@ async function toggleBackendRecognition() {
             });
             const data = await resp.json();
             recognitionEnabled = data.enabled;
-            $("start-btn").textContent = recognitionEnabled ? "⏸ Pause recognition" : "▶ Start recognition";
+            $("start-btn").textContent = recognitionEnabled ? "â¸ Pause recognition" : "â–¶ Start recognition";
         } catch (e) {
             alert(`Could not toggle recognition: ${e.message}`);
         }
     } else {
         // Web serial mode: toggle simulated / client classification
         recognitionEnabled = !recognitionEnabled;
-        $("start-btn").textContent = recognitionEnabled ? "⏸ Pause recognition" : "▶ Start recognition";
+        $("start-btn").textContent = recognitionEnabled ? "â¸ Pause recognition" : "â–¶ Start recognition";
         $("translation").textContent = recognitionEnabled
             ? "Live Web Serial stream active. Recording gesture windows..."
             : "Recognition paused.";
     }
 }
 
-// ─── Event Listeners ──────────────────────────────────────────────────
+// â”€â”€â”€ Event Listeners â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 $("connect-btn").addEventListener("click", () => {
     if (connectionMode === "webserial") {
         if (serialPort) {
@@ -519,14 +657,14 @@ $("mode-webserial").addEventListener("click", () => {
     connectionMode = "webserial";
     $("mode-webserial").classList.add("active");
     $("mode-backend").classList.remove("active");
-    $("connect-btn").textContent = serialPort ? "🔌 Disconnect ESP32" : "🔌 Connect ESP32 (Web Serial)";
+    $("connect-btn").textContent = serialPort ? "ðŸ”Œ Disconnect ESP32" : "ðŸ”Œ Connect ESP32 (Web Serial)";
 });
 
 $("mode-backend").addEventListener("click", () => {
     connectionMode = "backend";
     $("mode-backend").classList.add("active");
     $("mode-webserial").classList.remove("active");
-    $("connect-btn").textContent = "🔌 Connect ESP32 (COM4)";
+    $("connect-btn").textContent = "ðŸ”Œ Connect ESP32 (COM4)";
     updateBackendStatus();
 });
 
@@ -538,6 +676,12 @@ $("gesture-select").addEventListener("change", (e) => {
 
 $("custom-label-input").addEventListener("input", () => {
     $("active-target-label").textContent = getActiveLabel();
+});
+
+$("sample-count-input").addEventListener("input", () => {
+    if (!batchInProgress) {
+        $("record-btn").textContent = `⏺ Start ${$("sample-count-input").value}-sample batch`;
+    }
 });
 
 $("record-btn").addEventListener("click", triggerCollection);
@@ -556,6 +700,11 @@ $("clear-history").addEventListener("click", () => {
 
 // Shortcut: press space to trigger collection if focused on page
 window.addEventListener("keydown", (e) => {
+    if (e.code === "Enter" && e.target === document.body && batchInProgress && !isCollecting) {
+        e.preventDefault();
+        triggerCollection();
+        return;
+    }
     if (e.code === "Space" && e.target === document.body) {
         e.preventDefault();
         triggerCollection();
@@ -568,4 +717,44 @@ setInterval(updateBackendPrediction, 500);
 
 // Init
 $("active-target-label").textContent = getActiveLabel();
-
+try {
+    const storedSamples = localStorage.getItem(COLLECTION_STORAGE_KEY);
+    if (storedSamples) {
+        const parsedSamples = JSON.parse(storedSamples);
+        if (!Array.isArray(parsedSamples)) {
+            throw new Error("Stored samples are not a list.");
+        }
+        collectedSamplesInMemory = parsedSamples.filter(sample =>
+            sample &&
+            typeof sample.label === "string" &&
+            /^[A-Z0-9][A-Z0-9_-]*$/.test(sample.label.toUpperCase()) &&
+            Array.isArray(sample.features) &&
+            sample.features.length === 360 &&
+            sample.features.every(Number.isFinite)
+        ).map(sample => ({ ...sample, label: sample.label.toUpperCase() }));
+    } else {
+        const legacySamples = localStorage.getItem(LEGACY_COLLECTION_STORAGE_KEY);
+        if (legacySamples) {
+            const parsedSamples = JSON.parse(legacySamples);
+            if (!Array.isArray(parsedSamples)) {
+                throw new Error("Legacy browser samples are not a list.");
+            }
+            collectedSamplesInMemory = parsedSamples.filter(sample =>
+                sample &&
+                typeof sample.label === "string" &&
+                sample.label.toUpperCase() === "HELLO" &&
+                Array.isArray(sample.features) &&
+                sample.features.length === 360 &&
+                sample.features.every(Number.isFinite)
+            );
+            localStorage.setItem(COLLECTION_STORAGE_KEY, JSON.stringify(collectedSamplesInMemory));
+        }
+    }
+    localStorage.removeItem(LEGACY_COLLECTION_STORAGE_KEY);
+} catch (error) {
+    console.error("Could not load saved browser samples:", error);
+    $("collection-feedback").textContent =
+        "Saved browser samples could not be loaded. Check browser storage or export a backup.";
+}
+updateGestureOptions();
+loadHelloTrainingSamples();
