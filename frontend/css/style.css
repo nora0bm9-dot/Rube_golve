@@ -182,6 +182,11 @@ h2 { margin: 0; font-size: 20px; }
 .sensor-card { background: #0c0a0f; border: 1px solid #30202b; border-radius: 12px; padding: 12px; }
 .sensor-title { display: flex; justify-content: space-between; font-size: 10px; margin-bottom: 12px; }
 .sensor-title span:last-child { color: #ff668f; }
+.sensor-card.sensor-offline { border-color: #b43a4b; background: #1b0c12; }
+.sensor-card.sensor-offline .sensor-state { color: #ff7180; font-weight: 700; }
+.sensor-card.sensor-offline .sensor-value b { color: #ff9aa4; }
+.sensor-warning { margin: 12px 0 0; color: #ff9aa4; font-size: 11px; line-height: 1.6; }
+.sensor-warning[hidden] { display: none; }
 .sensor-values { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px 4px; }
 .sensor-value { color: #91818e; font-size: 9px; }
 .sensor-value b { display: block; color: #f8dce6; font-size: 11px; margin-top: 5px; font-weight: 500; }

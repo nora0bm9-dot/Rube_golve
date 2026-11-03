@@ -121,22 +121,37 @@ function renderSensors(sensors) {
     const grid = $("sensor-grid");
     if (!grid) return;
 
-    grid.innerHTML = sensors.map(s => `
-        <div class="sensor-card">
+    const offlineSensors = [];
+    grid.innerHTML = sensors.map(s => {
+        const values = [s.ax, s.ay, s.az, s.gx, s.gy, s.gz].map(Number);
+        const isOffline = values.every(value => Number.isFinite(value) && Math.abs(value) < 0.0005);
+        if (isOffline) offlineSensors.push(s.id);
+        const displayValue = value => isOffline ? "--" : Number(value).toFixed(2);
+        return `
+        <div class="sensor-card${isOffline ? " sensor-offline" : ""}">
             <div class="sensor-title">
                 <span>MPU6050 #${s.id}</span>
-                <span>â— LIVE</span>
+                <span class="sensor-state">${isOffline ? "NO DATA" : "LIVE"}</span>
             </div>
             <div class="sensor-values">
-                <div class="sensor-value">Ax<b>${Number(s.ax).toFixed(2)}</b></div>
-                <div class="sensor-value">Ay<b>${Number(s.ay).toFixed(2)}</b></div>
-                <div class="sensor-value">Az<b>${Number(s.az).toFixed(2)}</b></div>
-                <div class="sensor-value">Gx<b>${Number(s.gx).toFixed(2)}</b></div>
-                <div class="sensor-value">Gy<b>${Number(s.gy).toFixed(2)}</b></div>
-                <div class="sensor-value">Gz<b>${Number(s.gz).toFixed(2)}</b></div>
+                <div class="sensor-value">Ax<b>${displayValue(s.ax)}</b></div>
+                <div class="sensor-value">Ay<b>${displayValue(s.ay)}</b></div>
+                <div class="sensor-value">Az<b>${displayValue(s.az)}</b></div>
+                <div class="sensor-value">Gx<b>${displayValue(s.gx)}</b></div>
+                <div class="sensor-value">Gy<b>${displayValue(s.gy)}</b></div>
+                <div class="sensor-value">Gz<b>${displayValue(s.gz)}</b></div>
             </div>
         </div>
-    `).join("");
+    `;
+    }).join("");
+
+    const health = $("sensor-health");
+    if (health) {
+        health.hidden = offlineSensors.length === 0;
+        health.textContent = offlineSensors.length
+            ? `No sensor readings from MPU6050 #${offlineSensors.join(", #")}. Check sensor power, I2C wiring, and PCA9548A channel connections.`
+            : "";
+    }
 
     animateWaveform(sensors);
 }
